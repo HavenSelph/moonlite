@@ -63,20 +63,17 @@ impl<T: Debug + Copy + Clone> Debug for Arg<T> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct Args {
-    pub input: Arg<Option<&'static str>>,
-    pub debug: Arg<bool>,
-    pub report_level: Arg<ReportLevel>,
-    pub compact: Arg<bool>,
-    pub context: Arg<bool>,
-    pub max_reports: Arg<usize>,
-}
+macro_rules! arg_struct {
+    ($name:ident {$($field:ident: $field_type:ty = ($field_default:expr)),+$(,)?}) => {
+        #[derive(Debug, Copy, Clone)]
+        pub struct $name {
+            $(
+                pub $field: Arg<$field_type>,
+            )+
+        }
 
-macro_rules! make_getter {
-    ($($field:ident: $field_type:ty = ($field_default:expr)),+$(,)?) => {
         #[allow(dead_code)]
-        impl Args {
+        impl $name {
             pub fn default() -> Self {
                 Self {
                     $(
@@ -92,14 +89,17 @@ macro_rules! make_getter {
     };
 }
 
-make_getter! {
-    input: Option<&'static str>=(None),
-    debug: bool=(false),
-    report_level: ReportLevel=(ReportLevel::Warn),
-    compact: bool=(false),
-    context: bool=(true),
-    max_reports: usize=(usize::MAX),
-}
+arg_struct!(
+    Args {
+        input: Option<&'static str>=(None),
+        debug: bool=(false),
+        report_level: ReportLevel=(ReportLevel::Warn),
+        compact: bool=(false),
+        context: bool=(true),
+        max_reports: usize=(usize::MAX),
+        trace_execution: bool=(false),
+        show_bytecode: bool=(false),
+});
 
 impl Args {
     fn handle_arg(
@@ -196,6 +196,8 @@ impl Args {
                     };
                     self.max_reports.try_mut(arg, value);
                 }
+                "--trace-execution" => self.trace_execution.try_mut(arg, true),
+                "--show-bytecode" => self.show_bytecode.try_mut(arg, true),
                 _ => {
                     error!("unrecognized argument {}", arg);
                 }
@@ -224,15 +226,14 @@ impl Args {
 const LICENSE: &str = include_str!("../LICENSE");
 const USAGE: &str = "[-hVLdc] [-l level] <INPUT FILE>";
 const HELP_MESSAGE: &str = "\x1b[1mDESCRIPTION\x1b[0m
-    Moonlite is a prototype language that aims to make creating Lua
-    classes very easy. It is simple and transpiled directly to to Lua
-    and has some quality of life features such as easy circular-safe
-    imports, type safety, public and private class methods, and more.
+    Moonlite is a compiled language that runs on a custom
+    bytecode VM.
 
 \x1b[1mOPTIONS\x1b[0m
     -h, --help                        Show this message (or only usage with -h)
     -V, --version
     -L, --license                     Show the license. (BSD 3-Clause)
+
     -l, --report-level LEVEL          Set minimum level for a report to be shown
        (default: error)               [advice|warn|error|silent]
     -d, --debug                       Show debug information (likely not useful for you)
@@ -240,4 +241,6 @@ const HELP_MESSAGE: &str = "\x1b[1mDESCRIPTION\x1b[0m
 
         --disable-context             Disable the code context in reports
         --max-reports                 Set a maximum amount of reports to be printed
+        --trace-execution             Show each instruction as it is executed
+        --show-bytecode               Display the compiled bytecode
 ";

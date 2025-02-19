@@ -1,11 +1,10 @@
 use crate::ast::lexer::{Base, Lexer, LexerIterator};
 use crate::ast::span::Span;
 use crate::ast::token::{Token, TokenKind};
-use crate::ast::NodeKind::{BinaryOperation, UnaryOperation};
-use crate::ast::{Node, NodeKind, Operator};
-use crate::report::{Report, ReportKind, ReportLevel, ReportSender, Result, SpanToLabel};
+use crate::ast::{Node, NodeKind};
+use crate::report::{Maybe, Report, ReportKind, ReportLevel, ReportSender, SpanToLabel};
+use ariadne::Color;
 use name_variant::NamedVariant;
-use std::cmp::min;
 use std::fmt::{Display, Formatter};
 use ParserError::*;
 
@@ -45,7 +44,7 @@ pub struct Parser<'contents> {
 }
 
 impl<'contents> Parser<'contents> {
-    pub fn new(filename: &'static str, reporter: ReportSender) -> Result<Self> {
+    pub fn new(filename: &'static str, reporter: ReportSender) -> Maybe<Self> {
         let mut lexer = Lexer::new(filename)?.into_iter().peekable();
         let current = loop {
             match lexer.next() {
@@ -107,7 +106,7 @@ impl<'contents> Parser<'contents> {
         &mut self,
         predicate: F,
         message: T,
-    ) -> Result<Token<'contents>> {
+    ) -> Maybe<Token<'contents>> {
         match self.current {
             token if predicate(token) => {
                 if token.kind != TokenKind::EOF {
@@ -124,7 +123,7 @@ impl<'contents> Parser<'contents> {
         }
     }
 
-    fn consume_line(&mut self) -> Result<()> {
+    fn consume_line(&mut self) -> Maybe<()> {
         match self.current {
             Token {
                 kind: TokenKind::Semicolon,
@@ -144,7 +143,7 @@ impl<'contents> Parser<'contents> {
         Ok(())
     }
 
-    fn consume_line_or(&mut self, expect: TokenKind) -> Result<()> {
+    fn consume_line_or(&mut self, expect: TokenKind) -> Maybe<()> {
         match self.current {
             Token {
                 kind: TokenKind::Semicolon,
@@ -168,7 +167,7 @@ impl<'contents> Parser<'contents> {
         Ok(())
     }
 
-    fn consume_one(&mut self, expect: TokenKind) -> Result<Token<'contents>> {
+    fn consume_one(&mut self, expect: TokenKind) -> Maybe<Token<'contents>> {
         self.consume(|token| token.kind == expect, format!("Expected {expect}"))
     }
 
@@ -183,7 +182,7 @@ impl<'contents> Parser<'contents> {
         }
     }
 
-    fn parse_block(&mut self, start: Span, closer: TokenKind) -> Result<Box<Node>> {
+    fn parse_block(&mut self, start: Span, closer: TokenKind) -> Maybe<Box<Node>> {
         let mut stmts = Vec::new();
         let sync = |s: &mut Parser| s.sync(|token| token.kind == closer);
 
@@ -207,22 +206,55 @@ impl<'contents> Parser<'contents> {
         Ok(NodeKind::Block(stmts).make(start.extend(end)).into())
     }
 
-    fn parse_statement(&mut self) -> Result<Box<Node>> {
-        self.parse_expression(0)
+    fn parse_statement(&mut self) -> Maybe<Box<Node>> {
+        let Token { kind, span, .. } = self.current;
+        match kind {
+            TokenKind::Return => {
+                self.advance();
+                let expr = self.parse_expression(0)?;
+                Ok(NodeKind::Return(expr).make(span).into())
+            }
+            TokenKind::Let => {
+                self.advance();
+                let ident = self.consume_one(TokenKind::Identifier)?.text;
+                // let type_annotation: Option<Type> = match self.current.kind {
+                //     TokenKind::Colon => {
+                //         unimplemented!("Have not implemented type checking yet...")
+                //     }
+                //     _ => None
+                // };
+                self.consume_one(TokenKind::Equals)?;
+                let expr = self.parse_expression(0)?;
+                let span = span.extend(expr.span);
+                Ok(NodeKind::VarDeclaration(ident.to_string(), expr)
+                    .make(span)
+                    .into())
+            }
+            _ => self.parse_expression(0),
+        }
     }
 
-    fn parse_expression(&mut self, min_bp: u8) -> Result<Box<Node>> {
+    fn parse_expression(&mut self, min_bp: u8) -> Maybe<Box<Node>> {
         let mut lhs = match self.current.kind.as_prefix() {
             Some((op, _, rbp)) => {
                 let span = self.current.span;
                 self.advance();
                 let rhs = self.parse_expression(rbp)?;
                 let span = span.extend(rhs.span);
-                UnaryOperation(op, rhs).make(span).into()
+                NodeKind::UnaryOperation(op, rhs).make(span).into()
             }
             _ => self.parse_atom()?,
         };
         loop {
+            if let Some((op, lbp, ())) = self.current.kind.as_postfix() {
+                if lbp < min_bp {
+                    break;
+                }
+                let span = self.current.span;
+                self.advance();
+                lhs = NodeKind::UnaryOperation(op, lhs).make(span).into();
+                continue;
+            }
             let Some((op, lbp, rbp)) = self.current.kind.as_infix() else {
                 break;
             };
@@ -232,12 +264,12 @@ impl<'contents> Parser<'contents> {
             self.advance();
             let rhs = self.parse_expression(rbp)?;
             let span = lhs.span.extend(rhs.span);
-            lhs = BinaryOperation(op, lhs, rhs).make(span).into();
+            lhs = NodeKind::BinaryOperation(op, lhs, rhs).make(span).into();
         }
         Ok(lhs)
     }
 
-    fn parse_atom(&mut self) -> Result<Box<Node>> {
+    fn parse_atom(&mut self) -> Maybe<Box<Node>> {
         let Token {
             kind, text, span, ..
         } = self.current;
@@ -252,6 +284,14 @@ impl<'contents> Parser<'contents> {
             TokenKind::Identifier => {
                 self.advance();
                 Ok(NodeKind::Identifier(text.to_string()).make(span).into())
+            }
+            TokenKind::StringLiteral => {
+                self.advance();
+                Ok(
+                    NodeKind::StringLiteral(StringParser::new(text, span).parse()?)
+                        .make(span)
+                        .into(),
+                )
             }
             TokenKind::BooleanLiteral => {
                 self.advance();
@@ -296,5 +336,136 @@ impl<'contents> Parser<'contents> {
                 Err(UnexpectedToken(kind).make_labeled(span.label()).into())
             }
         }
+    }
+}
+
+struct StringParser<'contents> {
+    span: Span,
+    source: &'contents str,
+    char_indices: std::iter::Peekable<std::str::CharIndices<'contents>>,
+    current_char: Option<char>,
+    current_index: usize,
+}
+
+impl<'contents> StringParser<'contents> {
+    pub fn new(source: &'contents str, span: Span) -> Self {
+        let mut parser = Self {
+            span,
+            source,
+            char_indices: source.char_indices().peekable(),
+            current_char: None,
+            current_index: 0,
+        };
+        parser.advance();
+        parser
+    }
+    fn advance(&mut self) {
+        let current = self.char_indices.next();
+        self.current_char = current.map(|(_, c)| c);
+        self.current_index = current.map(|(i, _)| i).unwrap_or(self.current_index + 1);
+    }
+    fn span(&self, start: usize, end: usize) -> Span {
+        Span {
+            filename: self.span.filename,
+            start: self.span.start + start + 1,
+            end: self.span.start + end + 1,
+        }
+    }
+    fn span_from(&self, start: usize) -> Span {
+        self.span(start, self.current_index)
+    }
+
+    fn span_at(&self, start: usize) -> Span {
+        Span::at(self.span.filename, self.span.start + start + 1)
+    }
+
+    pub fn parse(&mut self) -> Maybe<String> {
+        let mut buf = String::with_capacity(self.source.len());
+        while let Some(char) = self.current_char {
+            let start = self.current_index;
+            match char {
+                '\\' => {
+                    self.advance();
+                    let escaped = self.current_char.expect("Lexer left a hanging escape");
+                    self.advance();
+                    match escaped {
+                        '\\' | '\'' | '"' => buf.push(escaped),
+                        'n' => buf.push('\n'),
+                        'r' => buf.push('\r'),
+                        't' => buf.push('\t'),
+                        'b' => buf.push('\u{0008}'),
+                        'f' => buf.push('\u{000C}'),
+                        '0' => buf.push('\0'),
+                        'u' => {
+                            let code_start = self.current_index;
+                            for _ in 0..4 {
+                                match self.current_char {
+                                    Some('0'..='9' | 'a'..='f' | 'A'..='F') => self.advance(),
+                                    Some(c) => {
+                                        return Err(SyntaxError(format!(
+                                            "Unexpected character {c:?} for escape code"
+                                        ))
+                                        .make_labeled(
+                                            self.span_at(self.current_index).labeled("here"),
+                                        )
+                                        .with_label(
+                                            self.span_from(code_start)
+                                                .label()
+                                                .with_color(Color::Blue),
+                                        )
+                                        .into());
+                                    }
+                                    None => {
+                                        return Err(SyntaxError(
+                                            "Unexpected end of string.".to_string(),
+                                        )
+                                        .make_labeled(
+                                            self.span_at(self.current_index).labeled("here"),
+                                        )
+                                        .with_label(
+                                            self.span_from(code_start)
+                                                .label()
+                                                .with_color(Color::Blue),
+                                        )
+                                        .into())
+                                    }
+                                };
+                            }
+                            let code_span = self.span(code_start, self.current_index);
+                            let code_text = &self.source[code_start..self.current_index];
+                            let val = u16::from_str_radix(code_text, 16).map_err(|e| {
+                                SyntaxError(format!("Invalid Unicode Escape Sequence: {code_text}"))
+                                    .make_labeled(code_span.labeled(e))
+                                    .with_label(self.span.label().with_color(Color::Blue))
+                            })?;
+                            let u_char = char::decode_utf16(vec![val])
+                                .next()
+                                .expect("Got None from unicode decoder")
+                                .map_err(|e| {
+                                    SyntaxError(format!(
+                                        "Invalid Unicode Escape Sequence: {code_text}"
+                                    ))
+                                    .make_labeled(code_span.label())
+                                    .with_label(self.span.label().with_color(Color::Blue))
+                                })?;
+                            buf.push(u_char);
+                        }
+                        unexpected => {
+                            return Err(SyntaxError(format!(
+                                "Invalid Escape Character: {unexpected}"
+                            ))
+                            .make_labeled(self.span_at(start).label())
+                            .with_label(self.span.label().with_color(Color::Blue))
+                            .into())
+                        }
+                    }
+                }
+                c => {
+                    self.advance();
+                    buf.push(c);
+                }
+            }
+        }
+        Ok(buf)
     }
 }

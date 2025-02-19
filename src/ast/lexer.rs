@@ -1,6 +1,6 @@
 use crate::ast::span::Span;
 use crate::ast::token::{Token, TokenKind};
-use crate::report::{ReportKind, ReportLevel, Result, SpanToLabel};
+use crate::report::{Maybe, ReportKind, ReportLevel, SpanToLabel};
 use ariadne::Color;
 use name_variant::NamedVariant;
 use std::fmt::{Display, Formatter};
@@ -45,7 +45,7 @@ pub struct Lexer<'contents> {
 }
 
 impl<'contents> Lexer<'contents> {
-    pub fn new(filename: &'static str) -> Result<Self> {
+    pub fn new(filename: &'static str) -> Maybe<Self> {
         let source = crate::files::get_source(filename)?.text();
         let mut lexer = Self {
             filename,
@@ -76,13 +76,13 @@ impl<'contents> Lexer<'contents> {
         end: usize,
         token_kind: TokenKind,
         text: &'contents str,
-    ) -> Result<Token<'contents>> {
+    ) -> Maybe<Token<'contents>> {
         let mut token = Token::new(token_kind, self.span(start, end), text);
         token.newline_before = self.seen_newline;
         self.seen_newline = false;
         Ok(token)
     }
-    fn make_simple(&mut self, start: usize, token_kind: TokenKind) -> Result<Token<'contents>> {
+    fn make_simple(&mut self, start: usize, token_kind: TokenKind) -> Maybe<Token<'contents>> {
         self.make(
             start,
             self.current_index,
@@ -95,7 +95,7 @@ impl<'contents> Lexer<'contents> {
         start: usize,
         i: usize,
         token_kind: TokenKind,
-    ) -> Result<Token<'contents>> {
+    ) -> Maybe<Token<'contents>> {
         for _ in 0..i {
             self.advance();
         }
@@ -120,7 +120,7 @@ impl<'contents> Lexer<'contents> {
         &self.source[start..end]
     }
 
-    fn unexpected(&mut self, char: char, start: usize) -> Result<Token<'contents>> {
+    fn unexpected(&mut self, char: char, start: usize) -> Maybe<Token<'contents>> {
         self.advance();
         Err(UnexpectedCharacter(char)
             .make_labeled(self.span_at(start).label())
@@ -128,7 +128,7 @@ impl<'contents> Lexer<'contents> {
     }
 
     #[allow(clippy::cognitive_complexity)]
-    pub fn lex_token(&mut self) -> Result<Token<'contents>> {
+    pub fn lex_token(&mut self) -> Maybe<Token<'contents>> {
         loop {
             let Some(char) = self.current_char else {
                 return Ok(Token::new(
@@ -156,6 +156,10 @@ impl<'contents> Lexer<'contents> {
                     }
                     let kind = match self.slice(start, self.current_index) {
                         "True" | "False" => TokenKind::BooleanLiteral,
+                        "let" => TokenKind::Let,
+                        "return" => TokenKind::Return,
+                        "and" => TokenKind::And,
+                        "or" => TokenKind::Or,
                         _ => TokenKind::Identifier,
                     };
                     self.make_simple(start, kind)
@@ -244,12 +248,29 @@ impl<'contents> Lexer<'contents> {
                 '(' => self.make_advance(start, 1, TokenKind::LeftParen),
                 ')' => self.make_advance(start, 1, TokenKind::RightParen),
                 ';' => self.make_advance(start, 1, TokenKind::Semicolon),
+                ':' => self.make_advance(start, 1, TokenKind::Colon),
+                '=' => match self.peek_char() {
+                    Some('=') => self.make_advance(start, 2, TokenKind::EqualsEquals),
+                    _ => self.make_advance(start, 1, TokenKind::Equals),
+                },
+                '>' => match self.peek_char() {
+                    Some('=') => self.make_advance(start, 2, TokenKind::GreaterThanEquals),
+                    _ => self.make_advance(start, 1, TokenKind::GreaterThan),
+                },
+                '<' => match self.peek_char() {
+                    Some('=') => self.make_advance(start, 2, TokenKind::LessThanEquals),
+                    _ => self.make_advance(start, 1, TokenKind::LessThan),
+                },
+                '!' => match self.peek_char() {
+                    Some('=') => self.make_advance(start, 2, TokenKind::BangEquals),
+                    _ => self.make_advance(start, 1, TokenKind::Bang),
+                },
                 _ => self.unexpected(char, start),
             };
         }
     }
 
-    fn lex_quoted_literal(&mut self, start: usize, closer: char) -> Result<()> {
+    fn lex_quoted_literal(&mut self, start: usize, closer: char) -> Maybe<()> {
         self.advance();
         while let Some(char) = self.current_char {
             match char {
@@ -258,7 +279,7 @@ impl<'contents> Lexer<'contents> {
                     self.advance();
                     self.advance();
                 }
-                '\n' => break,
+                // '\n' => break, // Should we do this?
                 _ => self.advance(),
             }
         }
@@ -271,7 +292,7 @@ impl<'contents> Lexer<'contents> {
         Ok(())
     }
 
-    fn lex_integer(&mut self, start: usize, base: Base) -> Result<()> {
+    fn lex_integer(&mut self, start: usize, base: Base) -> Maybe<()> {
         // todo: roman literal 0rIVVIM
         while let Some(char) = self.current_char {
             match (base, char.to_ascii_lowercase()) {
@@ -308,7 +329,7 @@ pub struct LexerIterator<'contents> {
 }
 
 impl<'contents> Iterator for LexerIterator<'contents> {
-    type Item = Result<Token<'contents>>;
+    type Item = Maybe<Token<'contents>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.exhausted {
@@ -330,7 +351,7 @@ impl<'contents> Iterator for LexerIterator<'contents> {
 impl<'contents> FusedIterator for LexerIterator<'contents> {}
 
 impl<'contents> IntoIterator for Lexer<'contents> {
-    type Item = Result<Token<'contents>>;
+    type Item = Maybe<Token<'contents>>;
     type IntoIter = LexerIterator<'contents>;
 
     fn into_iter(self) -> Self::IntoIter {

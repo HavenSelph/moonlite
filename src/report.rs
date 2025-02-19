@@ -1,27 +1,27 @@
 #![allow(unused)]
 use crate::args::ARGS;
 use crate::ast::span::Span;
-use crate::dprint;
 use crate::files::ScannerCache;
 use ariadne::{Color, Config};
 use name_variant::NamedVariant;
 use owo_colors::colors::CustomColor;
 use owo_colors::{AnsiColors, OwoColorize};
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
 use std::io;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::process::exit;
 use std::sync::mpsc::{Receiver, Sender};
 
-pub type Result<T> = std::result::Result<T, Box<ReportBuilder>>;
-pub type ResultFinal<T> = std::result::Result<T, Box<Report>>;
-pub type ResultErrorless<T> = std::result::Result<T, ()>;
+pub type Maybe<T> = Result<T, Box<ReportBuilder>>;
+pub type MaybeFinal<T> = Result<T, Box<Report>>;
+pub type MaybeErrorless<T> = Result<T, ()>;
 
 #[derive(Clone)]
 pub struct Label {
     span: Span,
     message: Option<String>,
     color: Option<Color>,
+    priority: Option<i32>,
 }
 
 impl Label {
@@ -30,6 +30,7 @@ impl Label {
             span,
             message: None,
             color: None,
+            priority: None,
         }
     }
     pub fn set_message<T: Display>(&mut self, message: T) -> &mut Self {
@@ -51,6 +52,16 @@ impl Label {
         self
     }
 
+    pub fn set_priority(&mut self, priority: i32) -> &mut Self {
+        self.priority = Some(priority);
+        self
+    }
+
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        self.set_priority(priority);
+        self
+    }
+
     fn as_ariadne_label(&self, level: ReportLevel) -> ariadne::Label<Span> {
         let mut label =
             ariadne::Label::new(self.span).with_color(if let Some(color) = self.color {
@@ -60,6 +71,9 @@ impl Label {
             });
         if let Some(text) = self.message.clone() {
             label = label.with_message(text);
+        }
+        if let Some(priority) = self.priority {
+            label = label.with_priority(priority)
         }
         label
     }
@@ -85,7 +99,7 @@ where
     fn unwrap_report(self) -> T;
 }
 
-impl<T> UnwrapReport<T> for Result<T> {
+impl<T> UnwrapReport<T> for Maybe<T> {
     fn unwrap_report(self) -> T {
         match self {
             Ok(val) => val,
@@ -98,7 +112,7 @@ impl<T> UnwrapReport<T> for Result<T> {
     }
 }
 
-impl<T> UnwrapReport<T> for ResultFinal<T> {
+impl<T> UnwrapReport<T> for MaybeFinal<T> {
     fn unwrap_report(self) -> T {
         match self {
             Ok(val) => val,
@@ -128,7 +142,7 @@ where
     }
 
     fn make_labeled(self, label: Label) -> ReportBuilder {
-        self.make().with_label(label)
+        self.make().with_label(label.with_priority(1))
     }
 }
 
@@ -164,11 +178,11 @@ impl From<ReportLevel> for Color {
 
 #[must_use]
 pub struct ReportBuilder {
-    level: ReportLevel,
-    title: String,
-    help: Option<String>,
-    note: Option<String>,
-    labels: Vec<Label>,
+    pub level: ReportLevel,
+    pub title: String,
+    pub help: Option<String>,
+    pub note: Option<String>,
+    pub labels: Vec<Label>,
 }
 
 impl ReportBuilder {

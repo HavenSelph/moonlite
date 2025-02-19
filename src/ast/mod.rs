@@ -10,10 +10,19 @@ pub mod token;
 
 #[derive(NamedVariant, Copy, Clone)]
 pub enum Operator {
+    Or,
+    And,
+    Not,
     Plus,
     Minus,
     Star,
     Slash,
+    GreaterThan,
+    LessThan,
+    GreaterThanEquals,
+    LessThanEquals,
+    Equals,
+    BangEquals,
 }
 
 impl TokenKind {
@@ -21,30 +30,41 @@ impl TokenKind {
         Some(match self {
             TokenKind::Plus => (Operator::Plus, (), 1),
             TokenKind::Minus => (Operator::Minus, (), 1),
+            TokenKind::Bang => (Operator::Not, (), 2),
             _ => return None,
         })
     }
 
     pub fn as_infix(self) -> Option<(Operator, u8, u8)> {
         Some(match self {
-            TokenKind::Plus => (Operator::Plus, 1, 2),
-            TokenKind::Minus => (Operator::Minus, 1, 2),
-            TokenKind::Star => (Operator::Star, 2, 3),
-            TokenKind::Slash => (Operator::Slash, 2, 3),
+            TokenKind::Or => (Operator::Or, 1, 2),
+            TokenKind::And => (Operator::And, 2, 3),
+            TokenKind::EqualsEquals => (Operator::Equals, 3, 4),
+            TokenKind::BangEquals => (Operator::BangEquals, 3, 4),
+            TokenKind::GreaterThan => (Operator::GreaterThan, 3, 4),
+            TokenKind::GreaterThanEquals => (Operator::GreaterThanEquals, 3, 4),
+            TokenKind::LessThan => (Operator::LessThan, 3, 4),
+            TokenKind::LessThanEquals => (Operator::LessThanEquals, 3, 4),
+            TokenKind::Plus => (Operator::Plus, 4, 5),
+            TokenKind::Minus => (Operator::Minus, 4, 5),
+            TokenKind::Star => (Operator::Star, 5, 6),
+            TokenKind::Slash => (Operator::Slash, 5, 6),
             _ => return None,
         })
     }
 
-    // pub fn postfix_binding(self) -> Option<(u8, u8)> {
-    //     Some(match self {
-    //         _ => return None,
-    //     })
-    // }
+    pub fn as_postfix(self) -> Option<(Operator, u8, ())> {
+        Some(match self {
+            _ => return None,
+        })
+    }
 }
 
-#[derive(NamedVariant)]
+#[derive(NamedVariant, Clone)]
 pub enum NodeKind {
+    Return(Box<Node>),
     Block(Vec<Node>),
+    VarDeclaration(String, Box<Node>),
     UnaryOperation(Operator, Box<Node>),
     BinaryOperation(Operator, Box<Node>, Box<Node>),
     Identifier(String),
@@ -60,9 +80,10 @@ impl NodeKind {
     }
 }
 
+#[derive(Clone)]
 pub struct Node {
-    kind: NodeKind,
-    span: Span,
+    pub kind: NodeKind,
+    pub span: Span,
 }
 
 impl Display for Node {
@@ -172,8 +193,14 @@ impl<'a> Display for NodeFormatter<'a> {
         let node = self.node;
         write!(f, "{}", node.kind.variant_name())?;
         match &node.kind {
+            NodeKind::Return(expr) => {
+                write!(f, "({})", expr)?;
+            }
+            NodeKind::VarDeclaration(ident, expr) => {
+                write!(f, "({}){{\n{}\n}}", ident, self.child(expr))?;
+            }
             NodeKind::UnaryOperation(op, expr) => {
-                write!(f, "({}) {{\n{}\n}}", op.variant_name(), self.child(expr),)?;
+                write!(f, "({}) {{\n{}\n}}", op.variant_name(), self.child(expr))?;
             }
             NodeKind::BinaryOperation(op, lhs, rhs) => {
                 write!(
