@@ -25,6 +25,18 @@ pub enum Operator {
     BangEquals,
 }
 
+impl Operator {
+    pub fn is_compound(&self) -> bool {
+        match self {
+            Operator::GreaterThan
+            | Operator::GreaterThanEquals
+            | Operator::LessThan
+            | Operator::LessThanEquals => true,
+            _ => false,
+        }
+    }
+}
+
 impl TokenKind {
     pub fn as_prefix(self) -> Option<(Operator, (), u8)> {
         Some(match self {
@@ -54,9 +66,10 @@ impl TokenKind {
     }
 
     pub fn as_postfix(self) -> Option<(Operator, u8, ())> {
-        Some(match self {
-            _ => return None,
-        })
+        // Some(match self {
+        //     _ => return None,
+        // })
+        None
     }
 }
 
@@ -194,7 +207,7 @@ impl<'a> Display for NodeFormatter<'a> {
         write!(f, "{}", node.kind.variant_name())?;
         match &node.kind {
             NodeKind::Return(expr) => {
-                write!(f, "({})", expr)?;
+                write!(f, "(\n{}\n)", self.child(expr))?;
             }
             NodeKind::VarDeclaration(ident, expr) => {
                 write!(f, "({}){{\n{}\n}}", ident, self.child(expr))?;

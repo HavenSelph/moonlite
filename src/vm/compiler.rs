@@ -25,6 +25,30 @@ impl Compiler {
         }
     }
 
+    pub fn handle_binary_op(&mut self, op: &Operator) {
+        self.chunk.write_op(match op {
+            Operator::Plus => OpCode::Add,
+            Operator::Minus => OpCode::Sub,
+            Operator::Star => OpCode::Mul,
+            Operator::Slash => OpCode::Div,
+            Operator::Or => OpCode::Or,
+            Operator::And => OpCode::And,
+            Operator::GreaterThan => OpCode::Greater,
+            Operator::LessThan => OpCode::Less,
+            Operator::GreaterThanEquals => OpCode::Less, // Swap direction and invert result
+            Operator::LessThanEquals => OpCode::Greater,
+            Operator::Equals => OpCode::Equal,
+            Operator::BangEquals => OpCode::Equal,
+            _ => unreachable!(),
+        });
+        match op {
+            Operator::GreaterThanEquals | Operator::LessThanEquals | Operator::BangEquals => {
+                self.chunk.write_op(OpCode::Not)
+            }
+            _ => (),
+        }
+    }
+
     pub fn compile(&mut self, node: &Node) {
         match &node.kind {
             NodeKind::Return(val) => {
@@ -41,28 +65,32 @@ impl Compiler {
                 })
             }
             NodeKind::BinaryOperation(op, lhs, rhs) => {
-                self.compile(&lhs);
-                self.compile(&rhs);
-                self.chunk.write_op(match op {
-                    Operator::Plus => OpCode::Add,
-                    Operator::Minus => OpCode::Sub,
-                    Operator::Star => OpCode::Mul,
-                    Operator::Slash => OpCode::Div,
-                    Operator::Or => OpCode::Or,
-                    Operator::And => OpCode::And,
-                    Operator::GreaterThan => OpCode::Greater,
-                    Operator::LessThan => OpCode::Less,
-                    Operator::GreaterThanEquals => OpCode::Less, // Swap direction and invert result
-                    Operator::LessThanEquals => OpCode::Greater,
-                    Operator::Equals => OpCode::Equal,
-                    Operator::BangEquals => OpCode::Equal,
-                    _ => unreachable!(),
-                });
-                match op {
-                    Operator::GreaterThanEquals
-                    | Operator::LessThanEquals
-                    | Operator::BangEquals => self.chunk.write_op(OpCode::Not),
-                    _ => (),
+                // The parser will always parse compound expressions such that:
+                // lhs will be either a value or another compound node
+                // rhs will never be another compound node
+                // Knowing this, we can handle the case where we are compiling
+                // a compound expression specifically.
+                self.compile(lhs);
+                match &lhs.kind {
+                    NodeKind::BinaryOperation(l_op, _, l_rhs)
+                        if op.is_compound() && l_op.is_compound() =>
+                    {
+                        // We know we are compiling a compound expression
+                        // i.e. 1 < 2 < 3
+                        // Since we have already compiled the lhs, we now
+                        // take the lhs node's rhs, and use it to compile
+                        // our operator.
+                        self.compile(&l_rhs);
+                        self.compile(rhs);
+                        self.handle_binary_op(op);
+                        // Now by writing and, we effectively turn the above example
+                        // into (1 < 2) and (2 < 3)
+                        self.chunk.write_op(OpCode::And);
+                    }
+                    _ => {
+                        self.compile(rhs);
+                        self.handle_binary_op(op);
+                    }
                 }
             }
             NodeKind::Identifier(_) => unimplemented!("awaiting var declaration"),
